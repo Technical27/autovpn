@@ -46,14 +46,14 @@ async fn set_domains<'a>(
 }
 
 async fn enable_dns(conn: &SyncConnection) -> Result<()> {
-    let proxy = get_network_proxy(&conn);
+    let proxy = get_network_proxy(conn);
     let ifindex = get_ifindex(&proxy, "wg0").await?;
     set_domains(&proxy, ifindex, &[""]).await?;
     Ok(())
 }
 
 async fn disable_dns(conn: &SyncConnection) -> Result<()> {
-    let proxy = get_network_proxy(&conn);
+    let proxy = get_network_proxy(conn);
     let ifindex = get_ifindex(&proxy, "wg0").await?;
     set_domains(&proxy, ifindex, &[]).await?;
     Ok(())

@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast::channel;
+use tokio::time::{sleep, Duration};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Msg {
@@ -33,6 +34,7 @@ async fn main() -> Result<()> {
     .context("failed to set ctrlc handler")?;
 
     while done.load(Ordering::SeqCst) {
+        sleep(Duration::from_millis(100)).await;
         tokio::task::yield_now().await;
     }
 

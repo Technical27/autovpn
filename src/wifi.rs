@@ -48,7 +48,7 @@ pub async fn get_ssid(socket: &mut NlSocket, nlid: u16, ifindex: u32) -> Result<
     attrs.push(Nlattr::new(
         false,
         false,
-        Nl80211Attr::Ifindex.into(),
+        Nl80211Attr::Ifindex,
         Buffer::from(ifindex.to_ne_bytes().as_ref()),
     )?);
 
@@ -104,7 +104,7 @@ pub fn setup(tx: Sender<Msg>) -> Result<JoinHandle<()>> {
                         Nl80211Cmd::NewInterface => {
                             if let Some(attr) = attrs.get_attribute(Nl80211Attr::Ssid) {
                                 let ssid = String::from_utf8_lossy(attr.nla_payload.as_ref());
-                                if ssid == "JAY2" {
+                                if ssid == "JAY2" || ssid == "JAY5" {
                                     debug!("disconnect");
                                     tx.send(Msg::Disable).unwrap();
                                 } else {

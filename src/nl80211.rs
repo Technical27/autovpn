@@ -1242,6 +1242,7 @@ pub enum Nl80211PlinkState {
 ///
 /// Enumeration from nl80211/nl80211.h:4318
 #[neli_enum(serialized_type = "u16")]
+#[allow(clippy::enum_variant_names)]
 pub enum PlinkActions {
     PlinkActionNoAction = 0,
     PlinkActionOpen = 1,
