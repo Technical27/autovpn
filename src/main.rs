@@ -1,5 +1,4 @@
 mod networkd;
-mod nl80211;
 mod rule;
 mod wifi;
 
