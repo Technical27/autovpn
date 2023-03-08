@@ -170,8 +170,7 @@ pub fn setup(tx: Sender<Msg>) -> Result<JoinHandle<()>> {
                         Nl80211Cmd::CmdNewInterface => {
                             if let Some(attr) = attrs.get_attribute(Nl80211Attr::AttrSsid) {
                                 let ssid = String::from_utf8_lossy(attr.nla_payload.as_ref());
-                                // ssid == "JAY2" ||
-                                if ssid == "JAY5" {
+                                if ssid == "JAY2" || ssid == "JAY5" {
                                     debug!("connected to known network '{}', disabling", ssid);
                                     tx.send(Msg::Disable).unwrap();
                                 } else {

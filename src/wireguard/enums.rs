@@ -22,9 +22,4 @@ pub enum WgDeviceAttr {
     AttrPeers = 8,
 }
 
-#[neli_enum(serialized_type = "u32")]
-pub enum WgDeviceFlags {
-    FlagReplacePeers = 1,
-}
-
 impl NlAttrType for WgDeviceAttr {}
