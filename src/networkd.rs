@@ -49,6 +49,7 @@ async fn enable_dns(conn: &SyncConnection) -> Result<()> {
     let proxy = get_network_proxy(conn);
     let ifindex = get_ifindex(&proxy, "wg0").await?;
     set_domains(&proxy, ifindex, &[""]).await?;
+    debug!("changed dns domain to ~.");
     Ok(())
 }
 
@@ -56,15 +57,17 @@ async fn disable_dns(conn: &SyncConnection) -> Result<()> {
     let proxy = get_network_proxy(conn);
     let ifindex = get_ifindex(&proxy, "wg0").await?;
     set_domains(&proxy, ifindex, &[]).await?;
+    debug!("removed dns domains");
     Ok(())
 }
 
 pub fn setup(mut rx: Receiver<Msg>) -> Result<JoinHandle<()>> {
     let (resource, conn) = connection::new_system_sync()?;
+    debug!("got dbus connection");
 
     let err_handle = tokio::spawn(async {
         let err = resource.await;
-        panic!("lost system dbus connection: {}", err);
+        error!("lost system dbus connection: {}", err);
     });
 
     let handle = tokio::spawn(async move {

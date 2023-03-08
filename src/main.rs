@@ -1,6 +1,7 @@
 mod networkd;
 mod rule;
 mod wifi;
+mod wireguard;
 
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,8 +22,9 @@ async fn main() -> Result<()> {
     let (tx, rx) = channel::<Msg>(32);
 
     let n_handle = networkd::setup(tx.subscribe())?;
-    let r_handle = rule::setup(rx)?;
+    let r_handle = rule::setup(rx);
     let w_handle = wifi::setup(tx.clone())?;
+    let wg_handle = wireguard::setup(tx.subscribe());
 
     let done = Arc::new(AtomicBool::new(true));
 
@@ -38,6 +40,7 @@ async fn main() -> Result<()> {
     }
 
     w_handle.abort();
+    wg_handle.abort();
     tx.send(Msg::Disable)?;
     tx.send(Msg::Quit)?;
     n_handle.await?;

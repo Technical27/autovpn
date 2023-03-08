@@ -141,7 +141,7 @@ fn remove_rule(socket: &mut NlSocketHandle, family: RtAddrFamily) -> Result<()> 
 }
 
 async fn enable_rules() -> Result<()> {
-    tokio::task::spawn_blocking(move || -> Result<()> {
+    tokio::task::spawn_blocking(|| {
         let mut socket = create_handle();
         add_rule(&mut socket, RtAddrFamily::Inet)?;
         debug!("enabled ipv4 rules");
@@ -155,7 +155,7 @@ async fn enable_rules() -> Result<()> {
 }
 
 async fn disable_rules() -> Result<()> {
-    tokio::task::spawn_blocking(move || -> Result<()> {
+    tokio::task::spawn_blocking(|| {
         let mut socket = create_handle();
         remove_rule(&mut socket, RtAddrFamily::Inet)?;
         debug!("disabled ipv4 rules");
@@ -171,8 +171,8 @@ fn create_handle() -> NlSocketHandle {
     NlSocketHandle::connect(NlFamily::Route, None, &[]).unwrap()
 }
 
-pub fn setup(mut rx: Receiver<Msg>) -> Result<JoinHandle<()>> {
-    let handle = tokio::spawn(async move {
+pub fn setup(mut rx: Receiver<Msg>) -> JoinHandle<()> {
+    tokio::spawn(async move {
         loop {
             let res = rx.recv().await;
 
@@ -192,7 +192,5 @@ pub fn setup(mut rx: Receiver<Msg>) -> Result<JoinHandle<()>> {
                 }
             }
         }
-    });
-
-    Ok(handle)
+    })
 }
