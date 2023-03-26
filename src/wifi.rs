@@ -108,6 +108,87 @@ fn get_ifindex(socket: &mut NlSocketHandle, family: u16) -> Result<Option<u32>> 
     Ok(ifindex)
 }
 
+async fn cmd_connect(
+    socket: &mut NlSocket,
+    ifindex: &mut Option<u32>,
+    family: u16,
+    header: &Genlmsghdr<Nl80211Cmd, Nl80211Attr>,
+) {
+    debug!("interface connect to new network, trying to get ssid");
+    let attrs = header.get_attr_handle();
+
+    if let Some(attr) = attrs.get_attribute(Nl80211Attr::AttrIfindex) {
+        let current_ifindex = parse_ifindex(attr.nla_payload.as_ref());
+        let ifindex = *ifindex.get_or_insert(current_ifindex);
+
+        if ifindex != current_ifindex {
+            debug!("other interface connect, ignoring");
+            return;
+        }
+
+        if let Err(e) = get_ssid(socket, family, ifindex).await {
+            error!("failed to get ssid: {}", e);
+        }
+    } else {
+        warn!("no ifindex for new connection, ignoring");
+    }
+}
+
+async fn cmd_new_interface(header: &Genlmsghdr<Nl80211Cmd, Nl80211Attr>, tx: &Sender<Msg>) {
+    let attrs = header.get_attr_handle();
+    debug!("attempting to get ssid from message");
+    if let Some(attr) = attrs.get_attribute(Nl80211Attr::AttrSsid) {
+        let ssid = String::from_utf8_lossy(attr.nla_payload.as_ref());
+        if ssid == "JAY2" || ssid == "JAY5" {
+            debug!("connected to known network '{}', disabling", ssid);
+            tx.send(Msg::Disable).unwrap();
+        } else {
+            debug!("connected to unknown network '{}', enabling", ssid);
+            tx.send(Msg::Enable).unwrap();
+        }
+    } else {
+        debug!("no ssid when there should be one, ignoring");
+    }
+}
+
+async fn recieve_messages(
+    socket: &mut NlSocket,
+    ifindex: &mut Option<u32>,
+    family: u16,
+    tx: &Sender<Msg>,
+) {
+    let mut buffer = Vec::new();
+
+    while let Ok(msgs) = socket
+        .recv::<u16, Genlmsghdr<Nl80211Cmd, Nl80211Attr>>(&mut buffer)
+        .await
+    {
+        for msg in msgs {
+            if msg.nl_flags.contains(&NlmF::Request) {
+                continue;
+            }
+
+            if let Some(payload) = msg.nl_payload.get_payload() {
+                match payload.cmd {
+                    Nl80211Cmd::CmdConnect => {
+                        cmd_connect(socket, ifindex, family, payload).await;
+                    }
+
+                    Nl80211Cmd::CmdDisconnect => {
+                        debug!("interface disconnect from network");
+                        tx.send(Msg::Disable).unwrap();
+                    }
+
+                    Nl80211Cmd::CmdNewInterface => {
+                        cmd_new_interface(payload, &tx).await;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 pub fn setup(tx: Sender<Msg>) -> Result<JoinHandle<()>> {
     let mut handle = NlSocketHandle::connect(NlFamily::Generic, None, &[])?;
 
@@ -117,7 +198,6 @@ pub fn setup(tx: Sender<Msg>) -> Result<JoinHandle<()>> {
     let mut ifindex = get_ifindex(&mut handle, family)?;
 
     let mut socket = NlSocket::new(handle)?;
-    let mut buffer = Vec::new();
 
     debug!("got nl80211 multicast notifications");
 
@@ -128,63 +208,8 @@ pub fn setup(tx: Sender<Msg>) -> Result<JoinHandle<()>> {
             if let Err(e) = get_ssid(&mut socket, family, i).await {
                 error!("failed to get ssid: {}", e);
             }
-        }
 
-        while let Ok(msgs) = socket
-            .recv::<u16, Genlmsghdr<Nl80211Cmd, Nl80211Attr>>(&mut buffer)
-            .await
-        {
-            for msg in msgs {
-                if msg.nl_flags.contains(&NlmF::Request) {
-                    continue;
-                }
-
-                if let Some(payload) = msg.nl_payload.get_payload() {
-                    let attrs = payload.get_attr_handle();
-
-                    match payload.cmd {
-                        Nl80211Cmd::CmdConnect => {
-                            debug!("interface connect to new network, trying to get ssid");
-                            if let Some(attr) = attrs.get_attribute(Nl80211Attr::AttrIfindex) {
-                                let current_ifindex = parse_ifindex(attr.nla_payload.as_ref());
-                                let ifindex = *ifindex.get_or_insert(current_ifindex);
-
-                                if ifindex != current_ifindex {
-                                    debug!("other interface connect, ignoring");
-                                    continue;
-                                }
-
-                                if let Err(e) = get_ssid(&mut socket, family, ifindex).await {
-                                    error!("failed to get ssid: {}", e);
-                                }
-                            } else {
-                                warn!("no ifindex for new connection, ignoring");
-                            }
-                        }
-
-                        Nl80211Cmd::CmdDisconnect => {
-                            debug!("interface disconnect from network");
-                            tx.send(Msg::Disable).unwrap();
-                        }
-
-                        Nl80211Cmd::CmdNewInterface => {
-                            if let Some(attr) = attrs.get_attribute(Nl80211Attr::AttrSsid) {
-                                let ssid = String::from_utf8_lossy(attr.nla_payload.as_ref());
-                                if ssid == "JAY2" || ssid == "JAY5" {
-                                    debug!("connected to known network '{}', disabling", ssid);
-                                    tx.send(Msg::Disable).unwrap();
-                                } else {
-                                    debug!("connected to unknown network '{}', enabling", ssid);
-                                    tx.send(Msg::Enable).unwrap();
-                                }
-                            } else {
-                                debug!("no ssid when there should be one, ignoring");
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
+            recieve_messages(&mut socket, &mut ifindex, family, &tx).await;
         }
     });
 

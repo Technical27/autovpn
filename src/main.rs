@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast::channel;
 use tokio::time::{sleep, Duration};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Msg {
     Enable,
     Disable,

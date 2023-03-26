@@ -64,8 +64,8 @@ async fn change_listen_port() -> Result<()> {
 
 pub fn setup(mut rx: Receiver<Msg>) -> JoinHandle<()> {
     tokio::spawn(async move {
-        loop {
-            if let Ok(Msg::Enable) = rx.recv().await {
+        while let Ok(msg) = rx.recv().await {
+            if msg == Msg::Enable {
                 // Some networks have odd NAT and firewalls which means that the last used port is
                 // likely not usable. Change the port once to improve the odds.
                 if let Err(e) = change_listen_port().await {
