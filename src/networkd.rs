@@ -1,11 +1,17 @@
-use super::Msg;
+use super::{Config, Msg};
+
 use anyhow::{Context, Result};
+
 use dbus::nonblock::{Proxy, SyncConnection};
 use dbus_tokio::connection;
+
 use log::*;
-use std::time::Duration;
+
 use tokio::sync::broadcast::Receiver;
 use tokio::task::JoinHandle;
+
+use std::sync::Arc;
+use std::time::Duration;
 
 fn get_network_proxy(conn: &SyncConnection) -> Proxy<'static, &SyncConnection> {
     Proxy::new(
@@ -45,23 +51,23 @@ async fn set_domains<'a>(
         .context("failed to set link domains")?)
 }
 
-async fn enable_dns(conn: &SyncConnection) -> Result<()> {
+async fn enable_dns(conn: &SyncConnection, ifname: &str) -> Result<()> {
     let proxy = get_network_proxy(conn);
-    let ifindex = get_ifindex(&proxy, "wg0").await?;
+    let ifindex = get_ifindex(&proxy, ifname).await?;
     set_domains(&proxy, ifindex, &[""]).await?;
     debug!("changed dns domain to ~.");
     Ok(())
 }
 
-async fn disable_dns(conn: &SyncConnection) -> Result<()> {
+async fn disable_dns(conn: &SyncConnection, ifname: &str) -> Result<()> {
     let proxy = get_network_proxy(conn);
-    let ifindex = get_ifindex(&proxy, "wg0").await?;
+    let ifindex = get_ifindex(&proxy, ifname).await?;
     set_domains(&proxy, ifindex, &[]).await?;
     debug!("removed dns domains");
     Ok(())
 }
 
-pub fn setup(mut rx: Receiver<Msg>) -> Result<JoinHandle<()>> {
+pub fn setup(mut rx: Receiver<Msg>, config: Arc<Config>) -> Result<JoinHandle<()>> {
     let (resource, conn) = connection::new_system_sync()?;
     debug!("got dbus connection");
 
@@ -74,12 +80,12 @@ pub fn setup(mut rx: Receiver<Msg>) -> Result<JoinHandle<()>> {
         while let Ok(m) = rx.recv().await {
             match m {
                 Msg::Enable => {
-                    if let Err(e) = enable_dns(&conn).await {
+                    if let Err(e) = enable_dns(&conn, &config.wireguard_interface).await {
                         error!("error on dns enable: {}", e);
                     }
                 }
                 Msg::Disable => {
-                    if let Err(e) = disable_dns(&conn).await {
+                    if let Err(e) = disable_dns(&conn, &config.wireguard_interface).await {
                         error!("error on dns disable: {}", e);
                     }
                 }

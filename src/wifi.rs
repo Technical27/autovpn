@@ -17,7 +17,10 @@ use tokio::task::JoinHandle;
 
 use log::*;
 
-use super::Msg;
+use std::ffi::CStr;
+use std::sync::Arc;
+
+use super::{Config, Msg};
 use neli_wifi::{Nl80211Attr, Nl80211Cmd, NL_80211_GENL_NAME};
 
 fn parse_ifindex(bytes: &[u8]) -> u32 {
@@ -60,7 +63,7 @@ async fn get_ssid(socket: &mut NlSocket, family: u16, ifindex: u32) -> Result<()
     Ok(())
 }
 
-fn get_ifindex(socket: &mut NlSocketHandle, family: u16) -> Result<Option<u32>> {
+fn get_ifindex(socket: &mut NlSocketHandle, family: u16, ifname: &str) -> Result<Option<u32>> {
     let attrs = GenlBuffer::new();
     let nlhdr = gen_nl80211_header(
         Nl80211Cmd::CmdGetInterface,
@@ -81,8 +84,10 @@ fn get_ifindex(socket: &mut NlSocketHandle, family: u16) -> Result<Option<u32>> 
 
         if let Some(payload) = msg.nl_payload.get_payload() {
             let attrs = payload.get_attr_handle();
-            if let Some(ifname) = attrs.get_attribute(Nl80211Attr::AttrIfname) {
-                if ifname.nla_payload.as_ref() == b"wlan0\0" {
+            if let Some(attr) = attrs.get_attribute(Nl80211Attr::AttrIfname) {
+                let i = CStr::from_bytes_with_nul(attr.nla_payload.as_ref())?.to_string_lossy();
+
+                if i == ifname {
                     ifindex = attrs
                         .get_attribute(Nl80211Attr::AttrIfindex)
                         .map(|attr| parse_ifindex(attr.nla_payload.as_ref()));
@@ -100,7 +105,7 @@ fn get_ifindex(socket: &mut NlSocketHandle, family: u16) -> Result<Option<u32>> 
     }
 
     if let Some(i) = ifindex {
-        debug!("got ifindex for wlan0: {}", i);
+        debug!("got ifindex for {}: {}", ifname, i);
     } else {
         debug!("failed to find ifindex to check current network, will get later");
     }
@@ -134,12 +139,16 @@ async fn cmd_connect(
     }
 }
 
-async fn cmd_new_interface(header: &Genlmsghdr<Nl80211Cmd, Nl80211Attr>, tx: &Sender<Msg>) {
+async fn cmd_new_interface(
+    header: &Genlmsghdr<Nl80211Cmd, Nl80211Attr>,
+    tx: &Sender<Msg>,
+    known_networks: &Vec<String>,
+) {
     let attrs = header.get_attr_handle();
     debug!("attempting to get ssid from message");
     if let Some(attr) = attrs.get_attribute(Nl80211Attr::AttrSsid) {
         let ssid = String::from_utf8_lossy(attr.nla_payload.as_ref());
-        if ssid == "JAY2" || ssid == "JAY5" {
+        if known_networks.iter().any(|s| *s == ssid) {
             info!("connected to known network '{}', disabling", ssid);
             tx.send(Msg::Disable).unwrap();
         } else {
@@ -151,11 +160,56 @@ async fn cmd_new_interface(header: &Genlmsghdr<Nl80211Cmd, Nl80211Attr>, tx: &Se
     }
 }
 
+async fn handle_payload(
+    socket: &mut NlSocket,
+    ifindex: &mut Option<u32>,
+    family: u16,
+    tx: &Sender<Msg>,
+    payload: &Genlmsghdr<Nl80211Cmd, Nl80211Attr>,
+    known_networks: &Vec<String>,
+) {
+    match payload.cmd {
+        Nl80211Cmd::CmdConnect => {
+            cmd_connect(socket, ifindex, family, payload).await;
+        }
+
+        Nl80211Cmd::CmdDisconnect => {
+            debug!("interface disconnect from network");
+            tx.send(Msg::Disable).unwrap();
+        }
+
+        Nl80211Cmd::CmdNewInterface => {
+            cmd_new_interface(payload, &tx, known_networks).await;
+        }
+        _ => {}
+    }
+}
+
+async fn handle_messages(
+    socket: &mut NlSocket,
+    ifindex: &mut Option<u32>,
+    family: u16,
+    tx: &Sender<Msg>,
+    messages: NlBuffer<u16, Genlmsghdr<Nl80211Cmd, Nl80211Attr>>,
+    known_networks: &Vec<String>,
+) {
+    for msg in messages {
+        if msg.nl_flags.contains(&NlmF::Request) {
+            continue;
+        }
+
+        if let Some(payload) = msg.nl_payload.get_payload() {
+            handle_payload(socket, ifindex, family, tx, payload, known_networks).await;
+        }
+    }
+}
+
 async fn recieve_messages(
     socket: &mut NlSocket,
     ifindex: &mut Option<u32>,
     family: u16,
     tx: &Sender<Msg>,
+    known_networks: &Vec<String>,
 ) {
     let mut buffer = Vec::new();
 
@@ -163,39 +217,17 @@ async fn recieve_messages(
         .recv::<u16, Genlmsghdr<Nl80211Cmd, Nl80211Attr>>(&mut buffer)
         .await
     {
-        for msg in msgs {
-            if msg.nl_flags.contains(&NlmF::Request) {
-                continue;
-            }
-
-            if let Some(payload) = msg.nl_payload.get_payload() {
-                match payload.cmd {
-                    Nl80211Cmd::CmdConnect => {
-                        cmd_connect(socket, ifindex, family, payload).await;
-                    }
-
-                    Nl80211Cmd::CmdDisconnect => {
-                        debug!("interface disconnect from network");
-                        tx.send(Msg::Disable).unwrap();
-                    }
-
-                    Nl80211Cmd::CmdNewInterface => {
-                        cmd_new_interface(payload, &tx).await;
-                    }
-                    _ => {}
-                }
-            }
-        }
+        handle_messages(socket, ifindex, family, tx, msgs, known_networks).await;
     }
 }
 
-pub fn setup(tx: Sender<Msg>) -> Result<JoinHandle<()>> {
+pub fn setup(tx: Sender<Msg>, config: Arc<Config>) -> Result<JoinHandle<()>> {
     let mut handle = NlSocketHandle::connect(NlFamily::Generic, None, &[])?;
 
     let family = handle.resolve_genl_family(NL_80211_GENL_NAME)?;
     let id = handle.resolve_nl_mcast_group(NL_80211_GENL_NAME, "mlme")?;
     handle.add_mcast_membership(&[id])?;
-    let mut ifindex = get_ifindex(&mut handle, family)?;
+    let mut ifindex = get_ifindex(&mut handle, family, &config.wlan_interface)?;
 
     let mut socket = NlSocket::new(handle)?;
 
@@ -209,7 +241,14 @@ pub fn setup(tx: Sender<Msg>) -> Result<JoinHandle<()>> {
                 error!("failed to get ssid: {}", e);
             }
 
-            recieve_messages(&mut socket, &mut ifindex, family, &tx).await;
+            recieve_messages(
+                &mut socket,
+                &mut ifindex,
+                family,
+                &tx,
+                &config.known_networks,
+            )
+            .await;
         }
     });
 

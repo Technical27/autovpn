@@ -14,11 +14,13 @@ use neli::{
 use tokio::sync::broadcast::Receiver;
 use tokio::task::JoinHandle;
 
+use std::sync::Arc;
+
 use log::*;
 
-use super::Msg;
+use super::{Config, Msg};
 
-fn generate_rtattrs() -> RtBuffer<Rta, Buffer> {
+fn generate_rtattrs(fwmark: u32, table: u32) -> RtBuffer<Rta, Buffer> {
     let mut buf = RtBuffer::new();
     buf.push(Rtattr {
         rta_len: 5,
@@ -28,18 +30,18 @@ fn generate_rtattrs() -> RtBuffer<Rta, Buffer> {
     buf.push(Rtattr {
         rta_len: 8,
         rta_type: Rta::Mark,
-        rta_payload: Buffer::from(51000_u32.to_ne_bytes().to_vec()),
+        rta_payload: Buffer::from(fwmark.to_ne_bytes().to_vec()),
     });
     buf.push(Rtattr {
         rta_len: 8,
         rta_type: Rta::Table,
-        rta_payload: Buffer::from(1000_u32.to_ne_bytes().to_vec()),
+        rta_payload: Buffer::from(table.to_ne_bytes().to_vec()),
     });
 
     buf
 }
 
-fn generate_rule_msg(family: RtAddrFamily) -> Rtmsg {
+fn generate_rule_msg(family: RtAddrFamily, fwmark: u32, table: u32) -> Rtmsg {
     use neli::consts::rtnl::*;
 
     Rtmsg {
@@ -52,12 +54,18 @@ fn generate_rule_msg(family: RtAddrFamily) -> Rtmsg {
         rtm_scope: RtScope::Universe,
         rtm_type: Rtn::Unicast,
         rtm_flags: RtmFFlags::new(&[]),
-        rtattrs: generate_rtattrs(),
+        rtattrs: generate_rtattrs(fwmark, table),
     }
 }
 
-fn generate_msg_header(family: RtAddrFamily, rtm: Rtm, flags: &[NlmF]) -> Nlmsghdr<Rtm, Rtmsg> {
-    let msg = generate_rule_msg(family);
+fn generate_msg_header(
+    family: RtAddrFamily,
+    rtm: Rtm,
+    fwmark: u32,
+    table: u32,
+    flags: &[NlmF],
+) -> Nlmsghdr<Rtm, Rtmsg> {
+    let msg = generate_rule_msg(family, fwmark, table);
     Nlmsghdr::new(
         None,
         rtm,
@@ -68,12 +76,19 @@ fn generate_msg_header(family: RtAddrFamily, rtm: Rtm, flags: &[NlmF]) -> Nlmsgh
     )
 }
 
-fn add_rule(socket: &mut NlSocketHandle, family: RtAddrFamily) -> Result<()> {
-    if !check_rules(socket, family).context("failed to check rules")? {
+fn add_rule(
+    socket: &mut NlSocketHandle,
+    family: RtAddrFamily,
+    fwmark: u32,
+    table: u32,
+) -> Result<()> {
+    if !check_rules(socket, family, fwmark, table).context("failed to check rules")? {
         trace!("adding rule for family: {:?}", family);
         socket.send(generate_msg_header(
             family,
             Rtm::Newrule,
+            fwmark,
+            table,
             &[NlmF::Request, NlmF::Create, NlmF::Excl],
         ))?;
     }
@@ -96,8 +111,19 @@ fn check_rule(msg: &Rtmsg) -> bool {
     false
 }
 
-fn check_rules(socket: &mut NlSocketHandle, family: RtAddrFamily) -> Result<bool> {
-    let header = generate_msg_header(family, Rtm::Getrule, &[NlmF::Request, NlmF::Match]);
+fn check_rules(
+    socket: &mut NlSocketHandle,
+    family: RtAddrFamily,
+    fwmark: u32,
+    table: u32,
+) -> Result<bool> {
+    let header = generate_msg_header(
+        family,
+        Rtm::Getrule,
+        fwmark,
+        table,
+        &[NlmF::Request, NlmF::Match],
+    );
 
     debug!("sending messages");
     socket.send(header)?;
@@ -130,38 +156,64 @@ fn check_rules(socket: &mut NlSocketHandle, family: RtAddrFamily) -> Result<bool
     Ok(rule_exists)
 }
 
-fn remove_rule(socket: &mut NlSocketHandle, family: RtAddrFamily) -> Result<()> {
-    if check_rules(socket, family).context("failed to check rules")? {
+fn remove_rule(
+    socket: &mut NlSocketHandle,
+    family: RtAddrFamily,
+    fwmark: u32,
+    table: u32,
+) -> Result<()> {
+    if check_rules(socket, family, fwmark, table).context("failed to check rules")? {
         trace!("removing rule for family: {:?}", family);
         socket
-            .send(generate_msg_header(family, Rtm::Delrule, &[NlmF::Request]))
+            .send(generate_msg_header(
+                family,
+                Rtm::Delrule,
+                fwmark,
+                table,
+                &[NlmF::Request],
+            ))
             .context("failed to send msg")?;
     }
     Ok(())
 }
 
-async fn enable_rules() -> Result<()> {
-    tokio::task::spawn_blocking(|| {
+async fn enable_rules(config: Arc<Config>) -> Result<()> {
+    let config = config.clone();
+
+    let fwmark = config.firewall_mark;
+    let table = config.routing_table;
+    let ipv6 = config.ipv6;
+
+    tokio::task::spawn_blocking(move || {
         let mut socket = create_handle();
-        add_rule(&mut socket, RtAddrFamily::Inet)?;
+        add_rule(&mut socket, RtAddrFamily::Inet, fwmark, table)?;
         debug!("enabled ipv4 rules");
 
-        add_rule(&mut socket, RtAddrFamily::Inet6)?;
-        debug!("enabled ipv6 rules");
+        if ipv6 {
+            add_rule(&mut socket, RtAddrFamily::Inet6, fwmark, table)?;
+            debug!("enabled ipv6 rules");
+        }
 
         Ok(())
     })
     .await?
 }
 
-async fn disable_rules() -> Result<()> {
-    tokio::task::spawn_blocking(|| {
+async fn disable_rules(config: Arc<Config>) -> Result<()> {
+    let config = config.clone();
+
+    let fwmark = config.firewall_mark;
+    let table = config.routing_table;
+
+    tokio::task::spawn_blocking(move || {
         let mut socket = create_handle();
-        remove_rule(&mut socket, RtAddrFamily::Inet)?;
+        remove_rule(&mut socket, RtAddrFamily::Inet, fwmark, table)?;
         debug!("disabled ipv4 rules");
 
-        remove_rule(&mut socket, RtAddrFamily::Inet6)?;
+        // Always disable ipv6 rules, because they may persist between config changes
+        remove_rule(&mut socket, RtAddrFamily::Inet6, fwmark, table)?;
         debug!("disabled ipv6 rules");
+
         Ok(())
     })
     .await?
@@ -171,17 +223,18 @@ fn create_handle() -> NlSocketHandle {
     NlSocketHandle::connect(NlFamily::Route, None, &[]).unwrap()
 }
 
-pub fn setup(mut rx: Receiver<Msg>) -> JoinHandle<()> {
+pub fn setup(mut rx: Receiver<Msg>, config: Arc<Config>) -> JoinHandle<()> {
+    let config = config.clone();
     tokio::spawn(async move {
         while let Ok(m) = rx.recv().await {
             match m {
                 Msg::Enable => {
-                    if let Err(e) = enable_rules().await {
+                    if let Err(e) = enable_rules(config.clone()).await {
                         error!("error on rule enable: {}", e);
                     }
                 }
                 Msg::Disable => {
-                    if let Err(e) = disable_rules().await {
+                    if let Err(e) = disable_rules(config.clone()).await {
                         error!("error on rule enable: {}", e);
                     }
                 }

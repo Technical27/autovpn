@@ -16,15 +16,36 @@ pub enum Msg {
     Quit,
 }
 
+#[derive(serde::Deserialize)]
+pub struct Config {
+    wireguard_interface: String,
+    wlan_interface: String,
+    known_networks: Vec<String>,
+    firewall_mark: u32,
+    routing_table: u32,
+    ipv6: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     pretty_env_logger::init();
+    let config = Arc::new({
+        match std::fs::read("/etc/autovpn/config.toml") {
+            Ok(c) => toml::from_str::<Config>(&String::from_utf8_lossy(&c))
+                .context("invalid config.toml")?,
+            Err(e) => {
+                log::error!("unable to read config at /etc/autovpn/config.toml: {}", e);
+                return Err(e.into());
+            }
+        }
+    });
+
     let (tx, rx) = channel::<Msg>(32);
 
-    let n_handle = networkd::setup(tx.subscribe())?;
-    let r_handle = rule::setup(rx);
-    let w_handle = wifi::setup(tx.clone())?;
-    let wg_handle = wireguard::setup(tx.subscribe());
+    let n_handle = networkd::setup(tx.subscribe(), config.clone())?;
+    let r_handle = rule::setup(rx, config.clone());
+    let w_handle = wifi::setup(tx.clone(), config.clone())?;
+    let wg_handle = wireguard::setup(tx.subscribe(), config.clone());
 
     let done = Arc::new(AtomicBool::new(true));
 
