@@ -140,10 +140,10 @@ async fn cmd_new_interface(header: &Genlmsghdr<Nl80211Cmd, Nl80211Attr>, tx: &Se
     if let Some(attr) = attrs.get_attribute(Nl80211Attr::AttrSsid) {
         let ssid = String::from_utf8_lossy(attr.nla_payload.as_ref());
         if ssid == "JAY2" || ssid == "JAY5" {
-            debug!("connected to known network '{}', disabling", ssid);
+            info!("connected to known network '{}', disabling", ssid);
             tx.send(Msg::Disable).unwrap();
         } else {
-            debug!("connected to unknown network '{}', enabling", ssid);
+            info!("connected to unknown network '{}', enabling", ssid);
             tx.send(Msg::Enable).unwrap();
         }
     } else {

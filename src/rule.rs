@@ -173,23 +173,19 @@ fn create_handle() -> NlSocketHandle {
 
 pub fn setup(mut rx: Receiver<Msg>) -> JoinHandle<()> {
     tokio::spawn(async move {
-        loop {
-            let res = rx.recv().await;
-
-            if let Ok(m) = res {
-                match m {
-                    Msg::Enable => {
-                        if let Err(e) = enable_rules().await {
-                            error!("error on rule enable: {}", e);
-                        }
+        while let Ok(m) = rx.recv().await {
+            match m {
+                Msg::Enable => {
+                    if let Err(e) = enable_rules().await {
+                        error!("error on rule enable: {}", e);
                     }
-                    Msg::Disable => {
-                        if let Err(e) = disable_rules().await {
-                            error!("error on rule enable: {}", e);
-                        }
-                    }
-                    Msg::Quit => break,
                 }
+                Msg::Disable => {
+                    if let Err(e) = disable_rules().await {
+                        error!("error on rule enable: {}", e);
+                    }
+                }
+                Msg::Quit => break,
             }
         }
     })
